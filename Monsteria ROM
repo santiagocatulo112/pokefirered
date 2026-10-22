@@ -1,0 +1,90 @@
+name: Build Monsteria ROM
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_monsteria:
+        description: "true = aplicar datos de Monsteria. false = compilar FireRed tal cual (prueba de la cadena de build)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout del fork
+        uses: actions/checkout@v4
+
+      - name: Checkout de agbcc (compilador que usa pokefirered)
+        uses: actions/checkout@v4
+        with:
+          repository: pret/agbcc
+          path: agbcc
+
+      - name: Instalar dependencias
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential binutils-arm-none-eabi gcc-arm-none-eabi libpng-dev
+
+      - name: Compilar e instalar agbcc en el repo
+        working-directory: agbcc
+        run: |
+          ./build.sh
+          ./install.sh ../
+
+      - name: Verificar parche de Monsteria (no escribe nada)
+        if: ${{ inputs.apply_monsteria }}
+        run: python3 tools/apply_monsteria.py --repo . --check --report monsteria_check_report.txt
+
+      - name: Aplicar parche de Monsteria
+        if: ${{ inputs.apply_monsteria }}
+        run: python3 tools/apply_monsteria.py --repo . --report monsteria_patch_report.txt
+
+      - name: Guardar diff de lo que cambio el parche
+        if: ${{ inputs.apply_monsteria }}
+        run: git diff -- src > monsteria_patch.diff || true
+
+      - name: Compilar la ROM completa
+        run: make -j"$(nproc)"
+
+      - name: Comprobar que existe la ROM
+        run: |
+          ls -l pokefirered.gba
+          sha1sum pokefirered.gba
+
+      - name: Comparar con el SHA1 de FireRed (solo modo baseline)
+        if: ${{ !inputs.apply_monsteria }}
+        continue-on-error: true
+        run: |
+          if [ -f firered.sha1 ]; then sha1sum -c firered.sha1; else echo "No hay firered.sha1; se omite la comparacion"; fi
+
+      - name: Nombrar la ROM
+        run: |
+          if [ "${{ inputs.apply_monsteria }}" = "true" ]; then
+            cp pokefirered.gba Monsteria.gba
+          else
+            cp pokefirered.gba FireRed-baseline.gba
+          fi
+
+      - name: Subir ROM
+        uses: actions/upload-artifact@v4
+        with:
+          name: rom-${{ inputs.apply_monsteria && 'monsteria' || 'baseline' }}
+          path: |
+            Monsteria.gba
+            FireRed-baseline.gba
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Subir reportes del parche
+        if: ${{ always() && inputs.apply_monsteria }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: reportes-parche
+          path: monsteria_*
+          if-no-files-found: ignore
+          retention-days: 7
